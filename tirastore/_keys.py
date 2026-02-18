@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from tirastore._schedule import normalize_schedule
+
 
 def canonical_json(obj: dict) -> str:
     """Return a deterministic JSON string for *obj*.
@@ -25,11 +27,16 @@ def make_key(
     program_tiramisu_source_code: str,
     tiralib_schedule_string: str,
 ) -> str:
-    """Compute a SHA-256 hex key from the three input fields."""
+    """Compute a SHA-256 hex key from the three input fields.
+
+    The schedule string is normalized before hashing so that equivalent
+    schedules (differing only in whitespace or quote style) produce the
+    same key.
+    """
     input_obj = {
         "program_name": program_name,
         "program_tiramisu_source_code": program_tiramisu_source_code,
-        "tiralib_schedule_string": tiralib_schedule_string,
+        "tiralib_schedule_string": normalize_schedule(tiralib_schedule_string),
     }
     blob = canonical_json(input_obj).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
@@ -40,10 +47,13 @@ def make_input_json(
     program_tiramisu_source_code: str,
     tiralib_schedule_string: str,
 ) -> str:
-    """Return the canonical JSON text for the input fields (stored in DB)."""
+    """Return the canonical JSON text for the input fields (stored in DB).
+
+    The schedule string is normalized before serialization.
+    """
     input_obj = {
         "program_name": program_name,
         "program_tiramisu_source_code": program_tiramisu_source_code,
-        "tiralib_schedule_string": tiralib_schedule_string,
+        "tiralib_schedule_string": normalize_schedule(tiralib_schedule_string),
     }
     return canonical_json(input_obj)

@@ -40,6 +40,7 @@ from typing import Any, Optional
 
 from tirastore._keys import make_input_json, make_key
 from tirastore._lock import HardLinkLock
+from tirastore._schedule import normalize_schedule, validate_schedule
 from tirastore._store import Store
 
 
@@ -276,7 +277,8 @@ class TiraStore:
         Raises
         ------
         ValueError
-            If ``is_legal`` is True but ``execution_times`` is None or empty.
+            If ``is_legal`` is True but ``execution_times`` is None or empty,
+            or if the schedule string is invalid.
         PermissionError
             If writes are disabled due to CPU mismatch.
         """
@@ -286,6 +288,12 @@ class TiraStore:
             raise ValueError(
                 "execution_times must be provided (non-empty list) when is_legal is True."
             )
+
+        # Validate the schedule (on the normalized form)
+        normalized = normalize_schedule(tiralib_schedule_string)
+        valid, reason = validate_schedule(normalized)
+        if not valid:
+            raise ValueError(f"Invalid schedule string: {reason}")
 
         key = make_key(program_name, program_source_code, tiralib_schedule_string)
         input_json = make_input_json(

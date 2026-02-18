@@ -8,6 +8,11 @@ import pytest
 
 from tirastore import LookupResult, TiraStore
 
+# A few valid schedule strings for use in tests
+_SCHED_A = "R(L0,comps=['c1'])"
+_SCHED_B = "I(L0,L1,comps=['c1'])"
+_EMPTY = ""
+
 
 @pytest.fixture
 def store(tmp_path):
@@ -25,13 +30,13 @@ def test_record_and_lookup(store):
     wrote = store.record(
         program_name="blur",
         program_source_code="void blur() {}",
-        tiralib_schedule_string="L0,L1,L2",
+        tiralib_schedule_string="S(L0,L1,4,8,comps=['c1'])",
         is_legal=True,
         execution_times=[0.042, 0.039, 0.041],
     )
     assert wrote
 
-    result = store.lookup("blur", "void blur() {}", "L0,L1,L2")
+    result = store.lookup("blur", "void blur() {}", "S(L0,L1,4,8,comps=['c1'])")
     assert result is not None
     assert isinstance(result, LookupResult)
     assert result.is_legal is True
@@ -40,7 +45,7 @@ def test_record_and_lookup(store):
 
 
 def test_lookup_missing(store):
-    result = store.lookup("nonexistent", "code", "sched")
+    result = store.lookup("nonexistent", "code", _EMPTY)
     assert result is None
 
 
@@ -48,13 +53,13 @@ def test_record_illegal(store):
     wrote = store.record(
         program_name="bad",
         program_source_code="code",
-        tiralib_schedule_string="sched",
+        tiralib_schedule_string=_SCHED_A,
         is_legal=False,
         execution_times=None,
     )
     assert wrote
 
-    result = store.lookup("bad", "code", "sched")
+    result = store.lookup("bad", "code", _SCHED_A)
     assert result is not None
     assert result.is_legal is False
     assert result.execution_times is None
@@ -62,12 +67,46 @@ def test_record_illegal(store):
 
 def test_record_legal_requires_times(store):
     with pytest.raises(ValueError, match="execution_times must be provided"):
-        store.record("p", "c", "s", is_legal=True, execution_times=None)
+        store.record("p", "c", _EMPTY, is_legal=True, execution_times=None)
 
 
 def test_record_legal_requires_nonempty_times(store):
     with pytest.raises(ValueError, match="execution_times must be provided"):
-        store.record("p", "c", "s", is_legal=True, execution_times=[])
+        store.record("p", "c", _EMPTY, is_legal=True, execution_times=[])
+
+
+# ------------------------------------------------------------------
+# Schedule validation
+# ------------------------------------------------------------------
+
+
+def test_record_rejects_invalid_schedule(store):
+    with pytest.raises(ValueError, match="Invalid schedule string"):
+        store.record("p", "c", "BOGUS(stuff)", is_legal=False)
+
+
+def test_record_rejects_malformed_schedule(store):
+    with pytest.raises(ValueError, match="Invalid schedule string"):
+        store.record("p", "c", "S(L0,comps=['c'])", is_legal=False)
+
+
+def test_record_accepts_empty_schedule(store):
+    wrote = store.record("p", "c", "", is_legal=False)
+    assert wrote
+
+
+def test_lookup_normalizes_schedule(store):
+    """A record stored with one whitespace/quote variant is found via another."""
+    store.record("p", "c", "R(L0,comps=['comp1'])", is_legal=False)
+
+    # Lookup with extra whitespace and double quotes — should still match
+    result = store.lookup("p", "c", ' R( L0 , comps=["comp1"] ) ')
+    assert result is not None
+
+
+def test_contains_normalizes_schedule(store):
+    store.record("p", "c", "R(L0,comps=['comp1'])", is_legal=False)
+    assert store.contains("p", "c", ' R(L0 , comps=["comp1"]) ')
 
 
 # ------------------------------------------------------------------
@@ -76,20 +115,20 @@ def test_record_legal_requires_nonempty_times(store):
 
 
 def test_no_overwrite_by_default(store):
-    store.record("p", "c", "s", is_legal=False)
-    wrote = store.record("p", "c", "s", is_legal=True, execution_times=[0.1])
+    store.record("p", "c", _EMPTY, is_legal=False)
+    wrote = store.record("p", "c", _EMPTY, is_legal=True, execution_times=[0.1])
     assert not wrote  # Did not overwrite
 
-    result = store.lookup("p", "c", "s")
+    result = store.lookup("p", "c", _EMPTY)
     assert result.is_legal is False
 
 
 def test_overwrite_when_requested(store):
-    store.record("p", "c", "s", is_legal=False)
-    wrote = store.record("p", "c", "s", is_legal=True, execution_times=[0.1], overwrite=True)
+    store.record("p", "c", _EMPTY, is_legal=False)
+    wrote = store.record("p", "c", _EMPTY, is_legal=True, execution_times=[0.1], overwrite=True)
     assert wrote
 
-    result = store.lookup("p", "c", "s")
+    result = store.lookup("p", "c", _EMPTY)
     assert result.is_legal is True
     assert result.execution_times == [0.1]
 
@@ -100,21 +139,21 @@ def test_overwrite_when_requested(store):
 
 
 def test_contains(store):
-    assert not store.contains("p", "c", "s")
-    store.record("p", "c", "s", is_legal=False)
-    assert store.contains("p", "c", "s")
+    assert not store.contains("p", "c", _EMPTY)
+    store.record("p", "c", _EMPTY, is_legal=False)
+    assert store.contains("p", "c", _EMPTY)
 
 
 def test_count(store):
     assert store.count() == 0
-    store.record("p1", "c", "s", is_legal=False)
-    store.record("p2", "c", "s", is_legal=False)
+    store.record("p1", "c", _SCHED_A, is_legal=False)
+    store.record("p2", "c", _SCHED_A, is_legal=False)
     assert store.count() == 2
 
 
 def test_stats(store):
-    store.record("p1", "c", "s1", is_legal=True, execution_times=[0.1])
-    store.record("p2", "c", "s2", is_legal=False)
+    store.record("p1", "c", _SCHED_A, is_legal=True, execution_times=[0.1])
+    store.record("p2", "c", _SCHED_B, is_legal=False)
     s = store.stats()
     assert s["total_records"] == 2
     assert s["legal_records"] == 1
@@ -127,8 +166,8 @@ def test_stats(store):
 
 
 def test_keys(store):
-    store.record("p1", "c", "s", is_legal=False)
-    store.record("p2", "c", "s", is_legal=False)
+    store.record("p1", "c", _SCHED_A, is_legal=False)
+    store.record("p2", "c", _SCHED_A, is_legal=False)
     k = store.keys()
     assert len(k) == 2
     # Each key should be a 64-char hex string
@@ -137,7 +176,7 @@ def test_keys(store):
 
 
 def test_get_by_key(store):
-    store.record("p", "c", "s", is_legal=False)
+    store.record("p", "c", _EMPTY, is_legal=False)
     k = store.keys()[0]
     row = store.get(k)
     assert row is not None
@@ -145,7 +184,7 @@ def test_get_by_key(store):
 
 
 def test_delete_by_key(store):
-    store.record("p", "c", "s", is_legal=False)
+    store.record("p", "c", _EMPTY, is_legal=False)
     k = store.keys()[0]
     assert store.delete(k)
     assert store.count() == 0
@@ -160,19 +199,19 @@ def test_cpu_mismatch_blocks_writes(tmp_path):
     db = tmp_path / "test.db"
     # Create the DB with a specific CPU
     store1 = TiraStore(db, cpu_model="Intel Xeon Gold 6248", slurm_cpus="8")
-    store1.record("p", "c", "s", is_legal=False)
+    store1.record("p", "c", _EMPTY, is_legal=False)
 
     # Connect from a "different CPU"
     store2 = TiraStore(db, cpu_model="AMD EPYC 7742", slurm_cpus="8")
     assert not store2.writes_allowed
 
     # Lookup should still work
-    result = store2.lookup("p", "c", "s")
+    result = store2.lookup("p", "c", _EMPTY)
     assert result is not None
 
     # Write should fail
     with pytest.raises(PermissionError, match="CPU metadata mismatch"):
-        store2.record("p2", "c", "s", is_legal=False)
+        store2.record("p2", "c", _EMPTY, is_legal=False)
 
 
 def test_cpu_mismatch_override(tmp_path):
@@ -182,7 +221,7 @@ def test_cpu_mismatch_override(tmp_path):
     store = TiraStore(db, cpu_model="CPU_B", slurm_cpus="4", allow_cpu_mismatch=True)
     assert store.writes_allowed
     # Should be able to write
-    store.record("p", "c", "s", is_legal=False)
+    store.record("p", "c", _EMPTY, is_legal=False)
 
 
 # ------------------------------------------------------------------
@@ -204,8 +243,8 @@ def test_slurm_cpus_property(store):
 
 
 def test_lookup_result_to_dict(store):
-    store.record("p", "c", "s", is_legal=True, execution_times=[0.5])
-    result = store.lookup("p", "c", "s")
+    store.record("p", "c", _SCHED_A, is_legal=True, execution_times=[0.5])
+    result = store.lookup("p", "c", _SCHED_A)
     d = result.to_dict()
     assert d["is_legal"] is True
     assert d["execution_times"] == [0.5]
