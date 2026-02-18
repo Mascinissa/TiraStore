@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tirastore"
+version = "0.1.0"
+description = "Distributed lookup table for Tiramisu program measurements on HPC/Lustre"
+requires-python = ">=3.9"
+dependencies = [
+    "py-cpuinfo",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["tirastore*"]
