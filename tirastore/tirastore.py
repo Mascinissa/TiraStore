@@ -24,7 +24,7 @@ Usage
     # Look up a previous measurement
     result = store.lookup("blur", "...", "...")
     if result is not None:
-        print(result["execution_times"])
+        print(result.execution_times)
 """
 
 from __future__ import annotations
@@ -33,12 +33,11 @@ import getpass
 import json
 import os
 import socket
-import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from tirastore._keys import make_input_json, make_key
+from tirastore._keys import make_key, make_program_hash
 from tirastore._lock import HardLinkLock
 from tirastore._schedule import normalize_schedule, validate_schedule
 from tirastore._store import Store
@@ -232,7 +231,8 @@ class TiraStore:
 
         Returns a :class:`LookupResult` if found, otherwise *None*.
         """
-        key = make_key(program_name, program_source_code, tiralib_schedule_string)
+        prog_hash = make_program_hash(program_source_code)
+        key = make_key(prog_hash, tiralib_schedule_string)
         with self._lock:
             row = self._store.get(key)
         if row is None:
@@ -290,15 +290,14 @@ class TiraStore:
             )
 
         # Validate the schedule (on the normalized form)
-        normalized = normalize_schedule(tiralib_schedule_string)
-        valid, reason = validate_schedule(normalized)
+        normalized_sched = normalize_schedule(tiralib_schedule_string)
+        valid, reason = validate_schedule(normalized_sched)
         if not valid:
             raise ValueError(f"Invalid schedule string: {reason}")
 
-        key = make_key(program_name, program_source_code, tiralib_schedule_string)
-        input_json = make_input_json(
-            program_name, program_source_code, tiralib_schedule_string
-        )
+        prog_hash = make_program_hash(program_source_code)
+        key = make_key(prog_hash, tiralib_schedule_string)
+
         result_obj = {
             "is_legal": is_legal,
             "execution_times": execution_times,
@@ -306,9 +305,12 @@ class TiraStore:
         result_json = json.dumps(result_obj, separators=(",", ":"), ensure_ascii=True)
 
         with self._lock:
+            # Ensure the program is stored (insert-if-absent)
+            self._store.put_program(prog_hash, program_name, program_source_code)
             return self._store.put(
                 key=key,
-                input_json=input_json,
+                program_hash=prog_hash,
+                schedule=normalized_sched,
                 result_json=result_json,
                 hostname=self._hostname,
                 username=self._username,
@@ -327,28 +329,34 @@ class TiraStore:
         tiralib_schedule_string: str,
     ) -> bool:
         """Check if a record exists for the given input."""
-        key = make_key(program_name, program_source_code, tiralib_schedule_string)
+        prog_hash = make_program_hash(program_source_code)
+        key = make_key(prog_hash, tiralib_schedule_string)
         with self._lock:
             return self._store.contains(key)
 
     def get(self, key: str) -> Optional[dict[str, Any]]:
-        """Retrieve a raw record by its SHA-256 key."""
+        """Retrieve a raw record (joined with program data) by its SHA-256 key."""
         with self._lock:
             return self._store.get(key)
 
     def put(
         self,
         key: str,
-        input_json: str,
+        program_hash: str,
+        schedule: str,
         result_json: str,
         overwrite: bool = False,
     ) -> bool:
-        """Low-level insert/update by raw key (admin use)."""
+        """Low-level insert/update by raw key (admin use).
+
+        The referenced program must already exist in the programs table.
+        """
         self._check_writes()
         with self._lock:
             return self._store.put(
                 key=key,
-                input_json=input_json,
+                program_hash=program_hash,
+                schedule=schedule,
                 result_json=result_json,
                 hostname=self._hostname,
                 username=self._username,
@@ -366,6 +374,11 @@ class TiraStore:
         """Return the total number of records."""
         with self._lock:
             return self._store.count()
+
+    def program_count(self) -> int:
+        """Return the total number of distinct programs."""
+        with self._lock:
+            return self._store.program_count()
 
     def stats(self) -> dict[str, Any]:
         """Return summary statistics about the database."""

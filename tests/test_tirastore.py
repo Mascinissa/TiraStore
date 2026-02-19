@@ -110,6 +110,70 @@ def test_contains_normalizes_schedule(store):
 
 
 # ------------------------------------------------------------------
+# Program deduplication
+# ------------------------------------------------------------------
+
+
+def test_program_dedup_same_source(store):
+    """Multiple records for the same program share one programs row."""
+    src = "void blur() { /* implementation */ }"
+    store.record("blur", src, _SCHED_A, is_legal=False)
+    store.record("blur", src, _SCHED_B, is_legal=False)
+
+    assert store.count() == 2
+    assert store.program_count() == 1
+
+
+def test_program_dedup_different_programs(store):
+    """Different programs get separate rows."""
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=False)
+    store.record("edge", "void edge() {}", _SCHED_A, is_legal=False)
+
+    assert store.count() == 2
+    assert store.program_count() == 2
+
+
+def test_program_source_normalization(store):
+    """Same code with different comments/whitespace matches on lookup."""
+    src_v1 = "void blur() { int x = 1; }"
+    src_v2 = "// header comment\nvoid blur() { int x = 1; }  // trailing"
+    src_v3 = "/* block */  void  blur()  {  int  x  =  1;  }"
+
+    store.record("blur", src_v1, _SCHED_A, is_legal=True, execution_times=[0.1])
+
+    # Lookup with cosmetically different source — same program
+    result = store.lookup("blur", src_v2, _SCHED_A)
+    assert result is not None
+    assert result.execution_times == [0.1]
+
+    result = store.lookup("blur", src_v3, _SCHED_A)
+    assert result is not None
+
+    # Only one program stored
+    assert store.program_count() == 1
+
+
+def test_readable_source_stored(store):
+    """The original (readable) source code is stored, not the normalized form."""
+    original = "// My blur program\nvoid blur() {\n    int x = 1;\n}"
+    store.record("blur", original, _SCHED_A, is_legal=False)
+
+    key = store.keys()[0]
+    row = store.get(key)
+    assert row["source_code"] == original
+
+
+def test_stats_includes_program_count(store):
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=False)
+    store.record("blur", "void blur() {}", _SCHED_B, is_legal=False)
+    store.record("edge", "void edge() {}", _SCHED_A, is_legal=False)
+
+    s = store.stats()
+    assert s["total_records"] == 3
+    assert s["total_programs"] == 2
+
+
+# ------------------------------------------------------------------
 # Overwrite behavior
 # ------------------------------------------------------------------
 
@@ -146,8 +210,8 @@ def test_contains(store):
 
 def test_count(store):
     assert store.count() == 0
-    store.record("p1", "c", _SCHED_A, is_legal=False)
-    store.record("p2", "c", _SCHED_A, is_legal=False)
+    store.record("p1", "void p1() {}", _SCHED_A, is_legal=False)
+    store.record("p2", "void p2() {}", _SCHED_A, is_legal=False)
     assert store.count() == 2
 
 
@@ -166,8 +230,8 @@ def test_stats(store):
 
 
 def test_keys(store):
-    store.record("p1", "c", _SCHED_A, is_legal=False)
-    store.record("p2", "c", _SCHED_A, is_legal=False)
+    store.record("p1", "void p1() {}", _SCHED_A, is_legal=False)
+    store.record("p2", "void p2() {}", _SCHED_A, is_legal=False)
     k = store.keys()
     assert len(k) == 2
     # Each key should be a 64-char hex string
@@ -181,6 +245,9 @@ def test_get_by_key(store):
     row = store.get(k)
     assert row is not None
     assert row["key"] == k
+    # Joined data should be present
+    assert "program_name" in row
+    assert "source_code" in row
 
 
 def test_delete_by_key(store):
