@@ -328,3 +328,159 @@ def test_repr(store):
     r = repr(store)
     assert "TiraStore" in r
     assert "test_project" in r
+
+
+# ------------------------------------------------------------------
+# record_many
+# ------------------------------------------------------------------
+
+
+def test_record_many_basic(store):
+    schedules = [
+        {"tiralib_schedule_string": _SCHED_A, "is_legal": True, "execution_times": [0.1]},
+        {"tiralib_schedule_string": _SCHED_B, "is_legal": False, "execution_times": None},
+    ]
+    written = store.record_many("blur", "void blur() {}", schedules)
+    assert written == 2
+    assert store.count() == 2
+    assert store.program_count() == 1
+
+
+def test_record_many_validates_all_before_writing(store):
+    """If any schedule is invalid, nothing should be written."""
+    schedules = [
+        {"tiralib_schedule_string": _SCHED_A, "is_legal": False, "execution_times": None},
+        {"tiralib_schedule_string": "BOGUS(stuff)", "is_legal": False, "execution_times": None},
+    ]
+    with pytest.raises(ValueError, match="Invalid schedule string"):
+        store.record_many("p", "c", schedules)
+    # Nothing written
+    assert store.count() == 0
+
+
+def test_record_many_validates_execution_times(store):
+    schedules = [
+        {"tiralib_schedule_string": _SCHED_A, "is_legal": True, "execution_times": None},
+    ]
+    with pytest.raises(ValueError, match="execution_times must be provided"):
+        store.record_many("p", "c", schedules)
+
+
+def test_record_many_no_overwrite(store):
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=False)
+    schedules = [
+        {"tiralib_schedule_string": _SCHED_A, "is_legal": True, "execution_times": [0.1]},
+        {"tiralib_schedule_string": _SCHED_B, "is_legal": False, "execution_times": None},
+    ]
+    written = store.record_many("blur", "void blur() {}", schedules, overwrite=False)
+    # Only the second schedule should be written (first already exists)
+    assert written == 1
+    assert store.count() == 2
+
+
+def test_record_many_overwrite(store):
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=False)
+    schedules = [
+        {"tiralib_schedule_string": _SCHED_A, "is_legal": True, "execution_times": [0.2]},
+    ]
+    written = store.record_many("blur", "void blur() {}", schedules, overwrite=True)
+    assert written == 1
+    result = store.lookup("blur", "void blur() {}", _SCHED_A)
+    assert result.is_legal is True
+    assert result.execution_times == [0.2]
+
+
+def test_record_many_empty_list(store):
+    written = store.record_many("blur", "void blur() {}", [])
+    assert written == 0
+
+
+def test_record_many_cpu_mismatch(tmp_path):
+    db = tmp_path / "test.db"
+    TiraStore(db, cpu_model="CPU_A", slurm_cpus="4")
+    store2 = TiraStore(db, cpu_model="CPU_B", slurm_cpus="4")
+    with pytest.raises(PermissionError, match="CPU metadata mismatch"):
+        store2.record_many("p", "c", [{"tiralib_schedule_string": "", "is_legal": False}])
+
+
+# ------------------------------------------------------------------
+# get_program_source
+# ------------------------------------------------------------------
+
+
+def test_get_program_source_single(store):
+    store.record("blur", "void blur() { int x; }", _SCHED_A, is_legal=False)
+    sources = store.get_program_source("blur")
+    assert len(sources) == 1
+    assert sources[0]["source_code"] == "void blur() { int x; }"
+    assert "program_hash" in sources[0]
+
+
+def test_get_program_source_multiple_versions(store):
+    """Different source code with the same name produces multiple entries."""
+    store.record("blur", "void blur_v1() {}", _SCHED_A, is_legal=False)
+    store.record("blur", "void blur_v2() {}", _SCHED_A, is_legal=False)
+    sources = store.get_program_source("blur")
+    assert len(sources) == 2
+    source_codes = {s["source_code"] for s in sources}
+    assert "void blur_v1() {}" in source_codes
+    assert "void blur_v2() {}" in source_codes
+
+
+def test_get_program_source_not_found(store):
+    sources = store.get_program_source("nonexistent")
+    assert sources == []
+
+
+def test_get_program_source_deduplicates(store):
+    """Same source code recorded twice (different schedules) returns only one entry."""
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=False)
+    store.record("blur", "void blur() {}", _SCHED_B, is_legal=False)
+    sources = store.get_program_source("blur")
+    assert len(sources) == 1
+
+
+# ------------------------------------------------------------------
+# get_program_records
+# ------------------------------------------------------------------
+
+
+def test_get_program_records_basic(store):
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=True, execution_times=[0.1])
+    store.record("blur", "void blur() {}", _SCHED_B, is_legal=False)
+
+    records = store.get_program_records("blur", "void blur() {}")
+    assert len(records) == 2
+    assert all(isinstance(r, LookupResult) for r in records)
+
+    legal_records = [r for r in records if r.is_legal]
+    illegal_records = [r for r in records if not r.is_legal]
+    assert len(legal_records) == 1
+    assert len(illegal_records) == 1
+    assert legal_records[0].execution_times == [0.1]
+
+
+def test_get_program_records_empty(store):
+    records = store.get_program_records("nonexistent", "void nonexistent() {}")
+    assert records == []
+
+
+def test_get_program_records_normalized_source(store):
+    """Source with different formatting should still find the same records."""
+    store.record("blur", "void blur() { int x; }", _SCHED_A, is_legal=False)
+
+    # Lookup with cosmetically different source
+    records = store.get_program_records("blur", "// comment\nvoid blur() { int x; }")
+    assert len(records) == 1
+
+
+def test_get_program_records_isolates_programs(store):
+    """Records from different programs should not mix."""
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=False)
+    store.record("edge", "void edge() {}", _SCHED_A, is_legal=False)
+
+    blur_records = store.get_program_records("blur", "void blur() {}")
+    assert len(blur_records) == 1
+
+    edge_records = store.get_program_records("edge", "void edge() {}")
+    assert len(edge_records) == 1

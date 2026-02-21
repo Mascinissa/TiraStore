@@ -318,6 +318,85 @@ class TiraStore:
                 overwrite=overwrite,
             )
 
+    def record_many(
+        self,
+        program_name: str,
+        program_source_code: str,
+        schedules: list[dict],
+        overwrite: bool = False,
+    ) -> int:
+        """Record multiple schedules for the same program in one operation.
+
+        Parameters
+        ----------
+        program_name : str
+            Name of the program.
+        program_source_code : str
+            Source code of the program.
+        schedules : list of dict
+            Each dict must have keys:
+            - ``tiralib_schedule_string`` (str)
+            - ``is_legal`` (bool)
+            - ``execution_times`` (list of float or None)
+        overwrite : bool
+            If *True*, overwrite existing records.
+
+        Returns
+        -------
+        int
+            Number of records actually written.
+
+        Raises
+        ------
+        ValueError
+            If any schedule is invalid, or if ``is_legal`` is True but
+            ``execution_times`` is None or empty.
+        PermissionError
+            If writes are disabled due to CPU mismatch.
+        """
+        self._check_writes()
+
+        prog_hash = make_program_hash(program_source_code)
+
+        # Validate all entries before writing anything
+        prepared: list[tuple[str, str, str]] = []
+        for i, entry in enumerate(schedules):
+            sched = entry["tiralib_schedule_string"]
+            is_legal = entry["is_legal"]
+            exec_times = entry.get("execution_times")
+
+            if is_legal and (exec_times is None or len(exec_times) == 0):
+                raise ValueError(
+                    f"schedules[{i}]: execution_times must be provided "
+                    f"(non-empty list) when is_legal is True."
+                )
+
+            normalized_sched = normalize_schedule(sched)
+            valid, reason = validate_schedule(normalized_sched)
+            if not valid:
+                raise ValueError(f"schedules[{i}]: Invalid schedule string: {reason}")
+
+            key = make_key(prog_hash, sched)
+            result_obj = {
+                "is_legal": is_legal,
+                "execution_times": exec_times,
+            }
+            result_json = json.dumps(
+                result_obj, separators=(",", ":"), ensure_ascii=True
+            )
+            prepared.append((key, normalized_sched, result_json))
+
+        with self._lock:
+            self._store.put_program(prog_hash, program_name, program_source_code)
+            return self._store.put_many(
+                rows=prepared,
+                program_hash=prog_hash,
+                hostname=self._hostname,
+                username=self._username,
+                source_project=self.source_project,
+                overwrite=overwrite,
+            )
+
     # ------------------------------------------------------------------
     # Public API — convenience / admin
     # ------------------------------------------------------------------
@@ -363,6 +442,52 @@ class TiraStore:
                 source_project=self.source_project,
                 overwrite=overwrite,
             )
+
+    def get_program_source(self, program_name: str) -> list[dict[str, str]]:
+        """Retrieve source code for a program by name.
+
+        Returns a list of dicts, each with ``program_hash`` and
+        ``source_code``.  Multiple entries are returned if different
+        source versions share the same name.
+        """
+        with self._lock:
+            rows = self._store.get_programs_by_name(program_name)
+        return [
+            {
+                "program_hash": r["program_hash"],
+                "source_code": r["source_code"],
+            }
+            for r in rows
+        ]
+
+    def get_program_records(
+        self,
+        program_name: str,
+        program_source_code: str,
+    ) -> list[LookupResult]:
+        """Retrieve all records for a specific program.
+
+        Returns a list of :class:`LookupResult` objects — one per
+        schedule that has been recorded for this program.
+        """
+        prog_hash = make_program_hash(program_source_code)
+        with self._lock:
+            rows = self._store.get_records_by_program_hash(prog_hash)
+        results: list[LookupResult] = []
+        for row in rows:
+            result = json.loads(row["result_json"])
+            results.append(
+                LookupResult(
+                    is_legal=result["is_legal"],
+                    execution_times=result.get("execution_times"),
+                    hostname=row["hostname"],
+                    username=row["username"],
+                    creation_date=row["creation_date"],
+                    update_date=row["update_date"],
+                    source_project=row["source_project"],
+                )
+            )
+        return results
 
     def delete(self, key: str) -> bool:
         """Delete a record by its SHA-256 key."""

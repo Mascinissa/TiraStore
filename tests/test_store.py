@@ -161,3 +161,105 @@ def test_program_dedup(tmp_path):
 
     assert store.count() == 2
     assert store.program_count() == 1
+
+
+# ------------------------------------------------------------------
+# get_programs_by_name
+# ------------------------------------------------------------------
+
+
+def test_get_programs_by_name(tmp_path):
+    store = _init_store(tmp_path)
+    store.put_program("h1", "blur", "void blur_v1() {}")
+    store.put_program("h2", "blur", "void blur_v2() {}")
+    store.put_program("h3", "edge", "void edge() {}")
+
+    results = store.get_programs_by_name("blur")
+    assert len(results) == 2
+    hashes = {r["program_hash"] for r in results}
+    assert hashes == {"h1", "h2"}
+
+
+def test_get_programs_by_name_empty(tmp_path):
+    store = _init_store(tmp_path)
+    assert store.get_programs_by_name("nonexistent") == []
+
+
+# ------------------------------------------------------------------
+# put_many
+# ------------------------------------------------------------------
+
+
+def test_put_many(tmp_path):
+    store = _init_store(tmp_path)
+    store.put_program("ph", "blur", "void blur() {}")
+
+    rows = [
+        ("k1", "sched_a", '{"is_legal":true}'),
+        ("k2", "sched_b", '{"is_legal":false}'),
+        ("k3", "sched_c", '{"is_legal":true}'),
+    ]
+    written = store.put_many(rows, "ph", "node01", "alice", "proj")
+    assert written == 3
+    assert store.count() == 3
+
+
+def test_put_many_no_overwrite(tmp_path):
+    store = _init_store(tmp_path)
+    store.put_program("ph", "blur", "void blur() {}")
+    store.put("k1", "ph", "sched_a", '{"is_legal":false}', "n", "u", "p")
+
+    rows = [
+        ("k1", "sched_a", '{"is_legal":true}'),
+        ("k2", "sched_b", '{"is_legal":false}'),
+    ]
+    written = store.put_many(rows, "ph", "n", "u", "p", overwrite=False)
+    assert written == 1  # k1 skipped, k2 written
+    assert store.count() == 2
+
+
+def test_put_many_overwrite(tmp_path):
+    store = _init_store(tmp_path)
+    store.put_program("ph", "blur", "void blur() {}")
+    store.put("k1", "ph", "sched_a", '{"is_legal":false}', "n", "u", "p")
+
+    rows = [
+        ("k1", "sched_a", '{"is_legal":true}'),
+    ]
+    written = store.put_many(rows, "ph", "n", "u", "p", overwrite=True)
+    assert written == 1
+    row = store.get("k1")
+    assert json.loads(row["result_json"])["is_legal"] is True
+
+
+def test_put_many_empty(tmp_path):
+    store = _init_store(tmp_path)
+    written = store.put_many([], "ph", "n", "u", "p")
+    assert written == 0
+
+
+# ------------------------------------------------------------------
+# get_records_by_program_hash
+# ------------------------------------------------------------------
+
+
+def test_get_records_by_program_hash(tmp_path):
+    store = _init_store(tmp_path)
+    store.put_program("ph1", "blur", "void blur() {}")
+    store.put_program("ph2", "edge", "void edge() {}")
+
+    store.put("k1", "ph1", "sched_a", '{"is_legal":true}', "n", "u", "p")
+    store.put("k2", "ph1", "sched_b", '{"is_legal":false}', "n", "u", "p")
+    store.put("k3", "ph2", "sched_a", '{"is_legal":true}', "n", "u", "p")
+
+    results = store.get_records_by_program_hash("ph1")
+    assert len(results) == 2
+    keys = {r["key"] for r in results}
+    assert keys == {"k1", "k2"}
+    # Should include joined program data
+    assert results[0]["program_name"] == "blur"
+
+
+def test_get_records_by_program_hash_empty(tmp_path):
+    store = _init_store(tmp_path)
+    assert store.get_records_by_program_hash("nonexistent") == []

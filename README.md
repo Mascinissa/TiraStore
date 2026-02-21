@@ -94,9 +94,49 @@ Stores a measurement result. Returns `True` if a write occurred, `False` if the 
 - Set `overwrite=True` to replace an existing record.
 - The schedule string is validated before recording. Invalid schedules raise `ValueError`.
 
+#### `store.record_many(program_name, program_source_code, schedules, overwrite=False)`
+
+Batch-insert multiple schedules for the same program in one operation. Returns the number of records actually written.
+
+Each entry in `schedules` is a dict with keys `tiralib_schedule_string` (str), `is_legal` (bool), and `execution_times` (list of float or None).
+
+All entries are validated upfront — if any schedule is invalid, nothing is written.
+
+```python
+store.record_many(
+    program_name="blur",
+    program_source_code="void blur() { ... }",
+    schedules=[
+        {"tiralib_schedule_string": "S(L0,L1,4,8,comps=['c1'])", "is_legal": True, "execution_times": [0.04]},
+        {"tiralib_schedule_string": "I(L0,L1,comps=['c1'])", "is_legal": False, "execution_times": None},
+        {"tiralib_schedule_string": "R(L0,comps=['c1'])", "is_legal": True, "execution_times": [0.03, 0.031]},
+    ],
+)
+```
+
 #### `store.contains(program_name, program_source_code, tiralib_schedule_string)`
 
 Returns `True` if a record exists for the given input.
+
+#### `store.get_program_source(program_name)`
+
+Retrieve the source code of a program by name. Returns a list of dicts, each with `program_hash` and `source_code`. Multiple entries are returned if different source versions share the same name.
+
+```python
+sources = store.get_program_source("blur")
+for s in sources:
+    print(s["program_hash"], s["source_code"][:80])
+```
+
+#### `store.get_program_records(program_name, program_source_code)`
+
+Retrieve all records for a specific program (all schedules recorded for that program). Returns a list of `LookupResult` objects.
+
+```python
+records = store.get_program_records("blur", "void blur() { ... }")
+for r in records:
+    print(r.is_legal, r.execution_times)
+```
 
 ### Utility Methods
 

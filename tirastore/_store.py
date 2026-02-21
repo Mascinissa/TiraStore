@@ -200,6 +200,18 @@ class Store:
         finally:
             conn.close()
 
+    def get_programs_by_name(self, program_name: str) -> list[dict[str, Any]]:
+        """Return all program rows matching a given name."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM programs WHERE program_name = ? ORDER BY program_hash",
+                (program_name,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def program_count(self) -> int:
         conn = self._connect()
         try:
@@ -292,6 +304,91 @@ class Store:
                 )
             conn.commit()
             return True
+        finally:
+            conn.close()
+
+    def put_many(
+        self,
+        rows: list[tuple[str, str, str, str]],
+        program_hash: str,
+        hostname: str,
+        username: str,
+        source_project: str,
+        overwrite: bool = False,
+    ) -> int:
+        """Insert multiple records in a single transaction.
+
+        Parameters
+        ----------
+        rows : list of (key, schedule, result_json) tuples
+            Each entry is (record_key, normalized_schedule, result_json).
+        program_hash : str
+            The program hash shared by all rows.
+        overwrite : bool
+            If True, overwrite existing records.
+
+        Returns the number of rows actually written.
+        """
+        now = _now_iso()
+        written = 0
+        conn = self._connect()
+        try:
+            for key, schedule, result_json in rows:
+                existing = conn.execute(
+                    "SELECT 1 FROM records WHERE key = ?", (key,)
+                ).fetchone()
+                if existing and not overwrite:
+                    continue
+                if existing and overwrite:
+                    conn.execute(
+                        """\
+                        UPDATE records
+                           SET program_hash   = ?,
+                               schedule       = ?,
+                               result_json    = ?,
+                               hostname       = ?,
+                               username       = ?,
+                               update_date    = ?,
+                               source_project = ?
+                         WHERE key = ?
+                        """,
+                        (program_hash, schedule, result_json, hostname,
+                         username, now, source_project, key),
+                    )
+                else:
+                    conn.execute(
+                        """\
+                        INSERT INTO records
+                            (key, program_hash, schedule, result_json, hostname,
+                             username, creation_date, update_date, source_project)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (key, program_hash, schedule, result_json, hostname,
+                         username, now, now, source_project),
+                    )
+                written += 1
+            conn.commit()
+            return written
+        finally:
+            conn.close()
+
+    def get_records_by_program_hash(
+        self, program_hash: str
+    ) -> list[dict[str, Any]]:
+        """Return all records (joined with program) for a given program hash."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """\
+                SELECT r.*, p.program_name, p.source_code
+                  FROM records r
+                  JOIN programs p ON r.program_hash = p.program_hash
+                 WHERE r.program_hash = ?
+                 ORDER BY r.creation_date
+                """,
+                (program_hash,),
+            ).fetchall()
+            return [dict(r) for r in rows]
         finally:
             conn.close()
 
