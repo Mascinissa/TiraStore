@@ -67,11 +67,12 @@ def validate_schedule(schedule: str) -> tuple[bool, str]:
     # comps=[...] block with at least one entry
     _COMPS = rf"comps=\[{_CN}(?:,{_CN})*\]"
     _INT = r"\d+"  # positive integer
+    _SINT = r"-?\d+" # positive or negative integer
     _LX = r"L\d+"  # loop level token
 
     # Per-transformation patterns
     patterns = {
-        "S": rf"^S\({_LX},{_LX},{_INT},{_INT},{_COMPS}\)$",
+        "S": rf"^S\({_LX},{_LX},{_SINT},{_SINT},{_COMPS}\)$",
         "I": rf"^I\({_LX},{_LX},{_COMPS}\)$",
         "R": rf"^R\({_LX},{_COMPS}\)$",
         "P": rf"^P\({_LX},{_COMPS}\)$",
