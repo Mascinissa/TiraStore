@@ -32,8 +32,10 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import shutil
 import socket
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -492,6 +494,123 @@ class TiraStore:
                 )
             )
         return results
+
+    # ------------------------------------------------------------------
+    # Public API — backup & export
+    # ------------------------------------------------------------------
+
+    def backup(self, backup_path: str | Path | None = None) -> Path:
+        """Create a snapshot copy of the database file.
+
+        Parameters
+        ----------
+        backup_path : str, Path, or None
+            Destination path for the backup.  If *None*, a timestamped
+            file is created next to the database
+            (e.g. ``store_20260221T153012Z.db``).
+
+        Returns
+        -------
+        Path
+            The path to the backup file.
+        """
+        if backup_path is None:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            stem = self.db_path.stem
+            backup_path = self.db_path.with_name(f"{stem}_{ts}.db")
+        backup_path = Path(backup_path).resolve()
+
+        with self._lock:
+            shutil.copy2(str(self.db_path), str(backup_path))
+
+        return backup_path
+
+    def export(
+        self,
+        output_path: str | Path,
+        fmt: str = "json",
+    ) -> Path:
+        """Export the entire database to JSON or JSONL.
+
+        Parameters
+        ----------
+        output_path : str or Path
+            Destination file path.
+        fmt : str
+            ``"json"`` (default) or ``"jsonl"`` (one program per line).
+
+        Returns
+        -------
+        Path
+            The path to the exported file.
+
+        The exported structure groups records by program name::
+
+            {
+              "blur": {
+                "Tiramisu_cpp": "<source code>",
+                "schedules_list": [
+                  {
+                    "schedule_str": "S(L0,L1,4,8,comps=['c1'])",
+                    "is_legal": true,
+                    "execution_times": [0.04]
+                  },
+                  ...
+                ],
+                "program_name": "blur"
+              },
+              ...
+            }
+
+        If the same program name has multiple source-code versions, keys
+        are suffixed with ``_v1``, ``_v2``, etc.
+        """
+        if fmt not in ("json", "jsonl"):
+            raise ValueError(f"fmt must be 'json' or 'jsonl', got {fmt!r}")
+
+        output_path = Path(output_path).resolve()
+
+        with self._lock:
+            all_data = self._store.get_all_programs_with_records()
+
+        # Group by program_name, detect duplicates needing _vN suffix
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for entry in all_data:
+            name = entry["program_name"]
+            by_name.setdefault(name, []).append(entry)
+
+        export_dict: dict[str, dict[str, Any]] = {}
+        for name, versions in by_name.items():
+            needs_suffix = len(versions) > 1
+            for idx, entry in enumerate(versions):
+                result = json.loads(entry["records"][0]["result_json"]) if entry["records"] else {}
+                schedules_list = []
+                for rec in entry["records"]:
+                    r = json.loads(rec["result_json"])
+                    schedules_list.append({
+                        "schedule_str": rec["schedule"],
+                        "is_legal": r["is_legal"],
+                        "execution_times": r.get("execution_times"),
+                    })
+
+                key = f"{name}_v{idx + 1}" if needs_suffix else name
+                export_dict[key] = {
+                    "Tiramisu_cpp": entry["source_code"],
+                    "schedules_list": schedules_list,
+                    "program_name": name,
+                }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            if fmt == "json":
+                json.dump(export_dict, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            else:  # jsonl
+                for key, value in export_dict.items():
+                    line_obj = {key: value}
+                    f.write(json.dumps(line_obj, ensure_ascii=False))
+                    f.write("\n")
+
+        return output_path
 
     def delete(self, key: str) -> bool:
         """Delete a record by its SHA-256 key."""

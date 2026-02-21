@@ -263,3 +263,35 @@ def test_get_records_by_program_hash(tmp_path):
 def test_get_records_by_program_hash_empty(tmp_path):
     store = _init_store(tmp_path)
     assert store.get_records_by_program_hash("nonexistent") == []
+
+
+# ------------------------------------------------------------------
+# get_all_programs_with_records
+# ------------------------------------------------------------------
+
+
+def test_get_all_programs_with_records(tmp_path):
+    store = _init_store(tmp_path)
+    store.put_program("ph1", "blur", "void blur() {}")
+    store.put_program("ph2", "edge", "void edge() {}")
+
+    store.put("k1", "ph1", "sched_a", '{"is_legal":true}', "n", "u", "p")
+    store.put("k2", "ph1", "sched_b", '{"is_legal":false}', "n", "u", "p")
+    store.put("k3", "ph2", "sched_a", '{"is_legal":true}', "n", "u", "p")
+
+    result = store.get_all_programs_with_records()
+    assert len(result) == 2
+    names = {r["program_name"] for r in result}
+    assert names == {"blur", "edge"}
+
+    blur = [r for r in result if r["program_name"] == "blur"][0]
+    assert len(blur["records"]) == 2
+    assert blur["source_code"] == "void blur() {}"
+
+    edge = [r for r in result if r["program_name"] == "edge"][0]
+    assert len(edge["records"]) == 1
+
+
+def test_get_all_programs_with_records_empty(tmp_path):
+    store = _init_store(tmp_path)
+    assert store.get_all_programs_with_records() == []

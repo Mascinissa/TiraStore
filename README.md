@@ -135,7 +135,45 @@ Retrieve all records for a specific program (all schedules recorded for that pro
 ```python
 records = store.get_program_records("blur", "void blur() { ... }")
 for r in records:
-    print(r.is_legal, r.execution_times)
+    print(r.schedule, r.is_legal, r.execution_times)
+```
+
+#### `store.backup(backup_path=None)`
+
+Create a snapshot copy of the database file. If no path is given, a timestamped file is created next to the database (e.g. `store_20260221T153012Z.db`). Returns the `Path` to the backup.
+
+```python
+backup = store.backup()                         # auto-timestamped
+backup = store.backup("/shared/backups/v1.db")  # custom path
+```
+
+#### `store.export(output_path, fmt="json")`
+
+Export the entire database to JSON or JSONL. Returns the `Path` to the exported file.
+
+- `fmt="json"` — a single JSON object keyed by program name.
+- `fmt="jsonl"` — one JSON object per line, one program per line.
+
+If the same program name has multiple source-code versions, keys are suffixed with `_v1`, `_v2`, etc.
+
+```python
+store.export("dataset.json", fmt="json")
+store.export("dataset.jsonl", fmt="jsonl")
+```
+
+Exported structure:
+
+```json
+{
+  "blur": {
+    "Tiramisu_cpp": "void blur() { ... }",
+    "schedules_list": [
+      {"schedule_str": "S(L0,L1,4,8,comps=['c1'])", "is_legal": true, "execution_times": [0.04]},
+      {"schedule_str": "I(L0,L1,comps=['c1'])", "is_legal": false, "execution_times": null}
+    ],
+    "program_name": "blur"
+  }
+}
 ```
 
 ### Utility Methods

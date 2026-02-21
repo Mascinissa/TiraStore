@@ -484,3 +484,111 @@ def test_get_program_records_isolates_programs(store):
 
     edge_records = store.get_program_records("edge", "void edge() {}")
     assert len(edge_records) == 1
+
+
+# ------------------------------------------------------------------
+# backup
+# ------------------------------------------------------------------
+
+
+def test_backup_default_path(store):
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=False)
+    backup = store.backup()
+    assert backup.exists()
+    assert backup.parent == store.db_path.parent
+    assert store.db_path.stem in backup.stem
+    assert backup.suffix == ".db"
+    # Backup should be a valid DB with the same record
+    from tirastore import TiraStore
+
+    store2 = TiraStore(backup, cpu_model="test_cpu", slurm_cpus="1")
+    assert store2.count() == 1
+
+
+def test_backup_custom_path(store, tmp_path):
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=False)
+    dest = tmp_path / "my_backup.db"
+    backup = store.backup(dest)
+    assert backup == dest.resolve()
+    assert backup.exists()
+
+
+# ------------------------------------------------------------------
+# export
+# ------------------------------------------------------------------
+
+
+def _populate_for_export(store):
+    """Insert a small dataset for export tests."""
+    store.record("blur", "void blur() {}", _SCHED_A, is_legal=True, execution_times=[0.1, 0.11])
+    store.record("blur", "void blur() {}", _SCHED_B, is_legal=False)
+    store.record("edge", "void edge() {}", _SCHED_A, is_legal=True, execution_times=[0.2])
+
+
+def test_export_json(store, tmp_path):
+    _populate_for_export(store)
+    out = tmp_path / "export.json"
+    result = store.export(out, fmt="json")
+    assert result == out.resolve()
+    assert out.exists()
+
+    data = json.loads(out.read_text())
+    assert "blur" in data
+    assert "edge" in data
+
+    blur = data["blur"]
+    assert blur["Tiramisu_cpp"] == "void blur() {}"
+    assert blur["program_name"] == "blur"
+    assert len(blur["schedules_list"]) == 2
+    # Check schedule_str is included
+    sched_strs = {s["schedule_str"] for s in blur["schedules_list"]}
+    assert len(sched_strs) == 2
+
+
+def test_export_jsonl(store, tmp_path):
+    _populate_for_export(store)
+    out = tmp_path / "export.jsonl"
+    store.export(out, fmt="jsonl")
+    assert out.exists()
+
+    lines = out.read_text().strip().split("\n")
+    assert len(lines) == 2  # 2 programs
+
+    # Each line is a valid JSON object with a single key
+    all_keys = set()
+    for line in lines:
+        obj = json.loads(line)
+        assert len(obj) == 1
+        all_keys.update(obj.keys())
+    assert "blur" in all_keys
+    assert "edge" in all_keys
+
+
+def test_export_multiple_versions(store, tmp_path):
+    """Same program name with different source gets _v1, _v2 suffixes."""
+    store.record("blur", "void blur_v1() {}", _SCHED_A, is_legal=False)
+    store.record("blur", "void blur_v2() {}", _SCHED_A, is_legal=False)
+
+    out = tmp_path / "export.json"
+    store.export(out, fmt="json")
+    data = json.loads(out.read_text())
+
+    # Should have versioned keys
+    assert "blur_v1" in data
+    assert "blur_v2" in data
+    assert "blur" not in data
+    # Both should have program_name = "blur"
+    assert data["blur_v1"]["program_name"] == "blur"
+    assert data["blur_v2"]["program_name"] == "blur"
+
+
+def test_export_empty_db(store, tmp_path):
+    out = tmp_path / "export.json"
+    store.export(out, fmt="json")
+    data = json.loads(out.read_text())
+    assert data == {}
+
+
+def test_export_invalid_fmt(store, tmp_path):
+    with pytest.raises(ValueError, match="fmt must be"):
+        store.export(tmp_path / "out.txt", fmt="csv")

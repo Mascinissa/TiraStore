@@ -443,6 +443,32 @@ class Store:
         finally:
             conn.close()
 
+    def get_all_programs_with_records(self) -> list[dict[str, Any]]:
+        """Return every program joined with its records.
+
+        Each returned dict has program-level fields (``program_hash``,
+        ``program_name``, ``source_code``) plus a ``records`` list of
+        dicts containing ``schedule``, ``result_json``.
+        """
+        conn = self._connect()
+        try:
+            programs = conn.execute(
+                "SELECT * FROM programs ORDER BY program_name, program_hash"
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for prog in programs:
+                records = conn.execute(
+                    "SELECT schedule, result_json FROM records "
+                    "WHERE program_hash = ? ORDER BY creation_date",
+                    (prog["program_hash"],),
+                ).fetchall()
+                entry = dict(prog)
+                entry["records"] = [dict(r) for r in records]
+                result.append(entry)
+            return result
+        finally:
+            conn.close()
+
     def keys(self, limit: int = 0, offset: int = 0) -> list[str]:
         """Return record keys with optional pagination."""
         conn = self._connect()
