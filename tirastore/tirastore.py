@@ -78,6 +78,7 @@ class LookupResult:
 
     is_legal: bool
     execution_times: Optional[list[float]]
+    schedule: str
     # record metadata
     hostname: str
     username: str
@@ -89,6 +90,7 @@ class LookupResult:
         return {
             "is_legal": self.is_legal,
             "execution_times": self.execution_times,
+            "schedule": self.schedule,
             "hostname": self.hostname,
             "username": self.username,
             "creation_date": self.creation_date,
@@ -241,6 +243,7 @@ class TiraStore:
         return LookupResult(
             is_legal=result["is_legal"],
             execution_times=result.get("execution_times"),
+            schedule=row["schedule"],
             hostname=row["hostname"],
             username=row["username"],
             creation_date=row["creation_date"],
@@ -480,6 +483,7 @@ class TiraStore:
                 LookupResult(
                     is_legal=result["is_legal"],
                     execution_times=result.get("execution_times"),
+                    schedule=row["schedule"],
                     hostname=row["hostname"],
                     username=row["username"],
                     creation_date=row["creation_date"],
