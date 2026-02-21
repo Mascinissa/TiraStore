@@ -26,9 +26,6 @@ CONTESTED_RECORDS="${3:-20}"
 # Where to put the test DB and logs — CHANGE THIS to a Lustre path
 TEST_DIR="${TIRASTORE_TEST_DIR:-$(pwd)/tirastore_multinode_test_$(date +%Y%m%d_%H%M%S)}"
 
-# Slurm partition — CHANGE THIS to match your cluster
-PARTITION="${SLURM_PARTITION:-batch}"
-
 # Path to this repo (for locating scripts)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER_SCRIPT="${SCRIPT_DIR}/test_worker.py"
@@ -45,7 +42,6 @@ echo "  Workers:             ${NUM_WORKERS}"
 echo "  Records/worker:      ${RECORDS_PER_WORKER}"
 echo "  Contested records:   ${CONTESTED_RECORDS}"
 echo "  Test directory:      ${TEST_DIR}"
-echo "  Partition:           ${PARTITION}"
 echo "============================================================"
 echo ""
 
@@ -61,10 +57,9 @@ for (( w=0; w<NUM_WORKERS; w++ )); do
     srun_log="${SRUN_LOG_DIR}/worker_${w}.out"
     echo "  Starting worker ${w} ..."
 
-    srun --partition="${PARTITION}" \
-         --ntasks=1 \
-         --cpus-per-task=1 \
-         --exclusive \
+    srun --ntasks=1 \
+         --cpus-per-task=28 \
+         --tasks-per-node=1 \
          --job-name="tirastore_test_w${w}" \
          python "${WORKER_SCRIPT}" \
              --db "${DB_PATH}" \
