@@ -1,8 +1,8 @@
-"""Tests for schedule normalization and validation."""
+"""Tests for schedule/program normalization and validation."""
 
 import pytest
 
-from tirastore._schedule import normalize_schedule, validate_schedule
+from tirastore._schedule import normalize_program, normalize_schedule, validate_schedule
 
 
 # ------------------------------------------------------------------
@@ -140,3 +140,65 @@ class TestValidate:
     def test_lowercase_transformation(self):
         ok, msg = validate_schedule("r(L0,comps=['c1'])")
         assert not ok
+
+
+# ------------------------------------------------------------------
+# normalize_program
+# ------------------------------------------------------------------
+
+
+class TestNormalizeProgram:
+    def test_empty(self):
+        assert normalize_program("") == ""
+
+    def test_none(self):
+        assert normalize_program(None) == ""
+
+    def test_strips_whitespace(self):
+        result = normalize_program("void  foo ( ) {  }")
+        assert result == "voidfoo(){}"
+
+    def test_strips_single_line_comment(self):
+        src = "int x; // this is a comment\nint y;"
+        result = normalize_program(src)
+        assert "//" not in result
+        assert "comment" not in result
+        assert "intx;inty;" == result
+
+    def test_strips_block_comment(self):
+        src = "int x; /* block\ncomment */ int y;"
+        result = normalize_program(src)
+        assert "/*" not in result
+        assert "block" not in result
+        assert "intx;inty;" == result
+
+    def test_strips_include(self):
+        src = '#include <stdio.h>\n#include "myheader.h"\nvoid foo() {}'
+        result = normalize_program(src)
+        assert "include" not in result
+        assert "stdio" not in result
+        assert "voidfoo(){}" == result
+
+    def test_strips_include_with_leading_spaces(self):
+        src = '  #  include  <vector>\nvoid bar();'
+        result = normalize_program(src)
+        assert "include" not in result
+        assert "voidbar();" == result
+
+    def test_same_code_different_formatting(self):
+        a = "void foo() { int x = 1; }"
+        b = "void  foo()  {\n  int  x  =  1;\n}"
+        assert normalize_program(a) == normalize_program(b)
+
+    def test_same_code_different_comments(self):
+        a = "void foo() { int x = 1; }"
+        b = "// header\nvoid foo() { /* init */ int x = 1; } // end"
+        assert normalize_program(a) == normalize_program(b)
+
+    def test_same_code_different_includes(self):
+        a = "void foo() {}"
+        b = '#include <iostream>\n#include "util.h"\nvoid foo() {}'
+        assert normalize_program(a) == normalize_program(b)
+
+    def test_different_code_differs(self):
+        assert normalize_program("void foo() {}") != normalize_program("void bar() {}")

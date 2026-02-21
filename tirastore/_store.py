@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 _CREATE_META_TABLE = """\
 CREATE TABLE IF NOT EXISTS db_meta (
@@ -27,10 +27,19 @@ CREATE TABLE IF NOT EXISTS db_meta (
 );
 """
 
+_CREATE_PROGRAMS_TABLE = """\
+CREATE TABLE IF NOT EXISTS programs (
+    program_hash    TEXT PRIMARY KEY,
+    program_name    TEXT NOT NULL,
+    source_code     TEXT NOT NULL
+);
+"""
+
 _CREATE_RECORDS_TABLE = """\
 CREATE TABLE IF NOT EXISTS records (
     key                TEXT PRIMARY KEY,
-    input_json         TEXT NOT NULL,
+    program_hash       TEXT NOT NULL REFERENCES programs(program_hash),
+    schedule           TEXT NOT NULL,
     result_json        TEXT NOT NULL,
     hostname           TEXT NOT NULL,
     username           TEXT NOT NULL,
@@ -66,6 +75,7 @@ class Store:
         conn.execute("PRAGMA journal_mode=DELETE;")
         conn.execute("PRAGMA busy_timeout=0;")
         conn.execute("PRAGMA synchronous=FULL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -83,6 +93,7 @@ class Store:
             conn = self._connect()
             try:
                 conn.execute(_CREATE_META_TABLE)
+                conn.execute(_CREATE_PROGRAMS_TABLE)
                 conn.execute(_CREATE_RECORDS_TABLE)
                 conn.execute(
                     "INSERT OR IGNORE INTO db_meta (key, value) VALUES (?, ?)",
@@ -117,6 +128,7 @@ class Store:
         conn = self._connect()
         try:
             conn.execute(_CREATE_META_TABLE)
+            conn.execute(_CREATE_PROGRAMS_TABLE)
             conn.execute(_CREATE_RECORDS_TABLE)
             conn.commit()
         finally:
@@ -154,6 +166,61 @@ class Store:
         return self.get_meta("slurm_cpus")
 
     # ------------------------------------------------------------------
+    # Programs CRUD
+    # ------------------------------------------------------------------
+
+    def put_program(
+        self, program_hash: str, program_name: str, source_code: str
+    ) -> bool:
+        """Insert a program if it does not already exist.  Returns True if inserted."""
+        conn = self._connect()
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM programs WHERE program_hash = ?", (program_hash,)
+            ).fetchone()
+            if existing:
+                return False
+            conn.execute(
+                "INSERT INTO programs (program_hash, program_name, source_code) VALUES (?, ?, ?)",
+                (program_hash, program_name, source_code),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def get_program(self, program_hash: str) -> Optional[dict[str, Any]]:
+        """Return a program row as a dict, or None."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM programs WHERE program_hash = ?", (program_hash,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def get_programs_by_name(self, program_name: str) -> list[dict[str, Any]]:
+        """Return all program rows matching a given name."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM programs WHERE program_name = ? ORDER BY program_hash",
+                (program_name,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def program_count(self) -> int:
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT COUNT(*) AS cnt FROM programs").fetchone()
+            return row["cnt"]
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
     # Record CRUD
     # ------------------------------------------------------------------
 
@@ -168,11 +235,17 @@ class Store:
             conn.close()
 
     def get(self, key: str) -> Optional[dict[str, Any]]:
-        """Return full row as a dict, or None."""
+        """Return a record joined with its program, or None."""
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT * FROM records WHERE key = ?", (key,)
+                """\
+                SELECT r.*, p.program_name, p.source_code
+                  FROM records r
+                  JOIN programs p ON r.program_hash = p.program_hash
+                 WHERE r.key = ?
+                """,
+                (key,),
             ).fetchone()
             if row is None:
                 return None
@@ -183,14 +256,18 @@ class Store:
     def put(
         self,
         key: str,
-        input_json: str,
+        program_hash: str,
+        schedule: str,
         result_json: str,
         hostname: str,
         username: str,
         source_project: str,
         overwrite: bool = False,
     ) -> bool:
-        """Insert or update a record.  Returns True if a write occurred."""
+        """Insert or update a record.  Returns True if a write occurred.
+
+        The referenced program must already exist in the programs table.
+        """
         now = _now_iso()
         conn = self._connect()
         try:
@@ -203,7 +280,8 @@ class Store:
                 conn.execute(
                     """\
                     UPDATE records
-                       SET input_json     = ?,
+                       SET program_hash   = ?,
+                           schedule       = ?,
                            result_json    = ?,
                            hostname       = ?,
                            username       = ?,
@@ -211,20 +289,106 @@ class Store:
                            source_project = ?
                      WHERE key = ?
                     """,
-                    (input_json, result_json, hostname, username, now, source_project, key),
+                    (program_hash, schedule, result_json, hostname, username, now, source_project, key),
                 )
             else:
                 conn.execute(
                     """\
                     INSERT INTO records
-                        (key, input_json, result_json, hostname, username,
-                         creation_date, update_date, source_project)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (key, program_hash, schedule, result_json, hostname,
+                         username, creation_date, update_date, source_project)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (key, input_json, result_json, hostname, username, now, now, source_project),
+                    (key, program_hash, schedule, result_json, hostname,
+                     username, now, now, source_project),
                 )
             conn.commit()
             return True
+        finally:
+            conn.close()
+
+    def put_many(
+        self,
+        rows: list[tuple[str, str, str, str]],
+        program_hash: str,
+        hostname: str,
+        username: str,
+        source_project: str,
+        overwrite: bool = False,
+    ) -> int:
+        """Insert multiple records in a single transaction.
+
+        Parameters
+        ----------
+        rows : list of (key, schedule, result_json) tuples
+            Each entry is (record_key, normalized_schedule, result_json).
+        program_hash : str
+            The program hash shared by all rows.
+        overwrite : bool
+            If True, overwrite existing records.
+
+        Returns the number of rows actually written.
+        """
+        now = _now_iso()
+        written = 0
+        conn = self._connect()
+        try:
+            for key, schedule, result_json in rows:
+                existing = conn.execute(
+                    "SELECT 1 FROM records WHERE key = ?", (key,)
+                ).fetchone()
+                if existing and not overwrite:
+                    continue
+                if existing and overwrite:
+                    conn.execute(
+                        """\
+                        UPDATE records
+                           SET program_hash   = ?,
+                               schedule       = ?,
+                               result_json    = ?,
+                               hostname       = ?,
+                               username       = ?,
+                               update_date    = ?,
+                               source_project = ?
+                         WHERE key = ?
+                        """,
+                        (program_hash, schedule, result_json, hostname,
+                         username, now, source_project, key),
+                    )
+                else:
+                    conn.execute(
+                        """\
+                        INSERT INTO records
+                            (key, program_hash, schedule, result_json, hostname,
+                             username, creation_date, update_date, source_project)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (key, program_hash, schedule, result_json, hostname,
+                         username, now, now, source_project),
+                    )
+                written += 1
+            conn.commit()
+            return written
+        finally:
+            conn.close()
+
+    def get_records_by_program_hash(
+        self, program_hash: str
+    ) -> list[dict[str, Any]]:
+        """Return all records (joined with program) for a given program hash."""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """\
+                SELECT r.*, p.program_name, p.source_code
+                  FROM records r
+                  JOIN programs p ON r.program_hash = p.program_hash
+                 WHERE r.program_hash = ?
+                 ORDER BY r.creation_date
+                """,
+                (program_hash,),
+            ).fetchall()
+            return [dict(r) for r in rows]
         finally:
             conn.close()
 
@@ -257,6 +421,9 @@ class Store:
             illegal = conn.execute(
                 "SELECT COUNT(*) AS cnt FROM records WHERE json_extract(result_json, '$.is_legal') = 0"
             ).fetchone()["cnt"]
+            programs = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM programs"
+            ).fetchone()["cnt"]
             projects = conn.execute(
                 "SELECT DISTINCT source_project FROM records"
             ).fetchall()
@@ -267,11 +434,38 @@ class Store:
                 "total_records": total,
                 "legal_records": legal,
                 "illegal_records": illegal,
+                "total_programs": programs,
                 "source_projects": [r["source_project"] for r in projects],
                 "users": [r["username"] for r in users],
                 "cpu_model": self.get_cpu_model(),
                 "slurm_cpus": self.get_slurm_cpus(),
             }
+        finally:
+            conn.close()
+
+    def get_all_programs_with_records(self) -> list[dict[str, Any]]:
+        """Return every program joined with its records.
+
+        Each returned dict has program-level fields (``program_hash``,
+        ``program_name``, ``source_code``) plus a ``records`` list of
+        dicts containing ``schedule``, ``result_json``.
+        """
+        conn = self._connect()
+        try:
+            programs = conn.execute(
+                "SELECT * FROM programs ORDER BY program_name, program_hash"
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for prog in programs:
+                records = conn.execute(
+                    "SELECT schedule, result_json FROM records "
+                    "WHERE program_hash = ? ORDER BY creation_date",
+                    (prog["program_hash"],),
+                ).fetchall()
+                entry = dict(prog)
+                entry["records"] = [dict(r) for r in records]
+                result.append(entry)
+            return result
         finally:
             conn.close()
 

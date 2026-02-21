@@ -27,13 +27,13 @@ store = TiraStore(
 store.record(
     program_name="blur",
     program_source_code="void blur() { ... }",
-    tiralib_schedule_string="L0,L1,L2",
+    tiralib_schedule_string="S(L0,L1,4,8,comps=['c1'])",
     is_legal=True,
     execution_times=[0.042, 0.039, 0.041],
 )
 
 # Look up a previous measurement
-result = store.lookup("blur", "void blur() { ... }", "L0,L1,L2")
+result = store.lookup("blur", "void blur() { ... }", "S(L0,L1,4,8,comps=['c1'])")
 if result is not None:
     print(result.is_legal)          # True
     print(result.execution_times)   # [0.042, 0.039, 0.041]
@@ -92,20 +92,100 @@ Stores a measurement result. Returns `True` if a write occurred, `False` if the 
 - If `is_legal=True`, `execution_times` must be a non-empty list of floats.
 - If `is_legal=False`, `execution_times` can be `None`.
 - Set `overwrite=True` to replace an existing record.
+- The schedule string is validated before recording. Invalid schedules raise `ValueError`.
+
+#### `store.record_many(program_name, program_source_code, schedules, overwrite=False)`
+
+Batch-insert multiple schedules for the same program in one operation. Returns the number of records actually written.
+
+Each entry in `schedules` is a dict with keys `tiralib_schedule_string` (str), `is_legal` (bool), and `execution_times` (list of float or None).
+
+All entries are validated upfront — if any schedule is invalid, nothing is written.
+
+```python
+store.record_many(
+    program_name="blur",
+    program_source_code="void blur() { ... }",
+    schedules=[
+        {"tiralib_schedule_string": "S(L0,L1,4,8,comps=['c1'])", "is_legal": True, "execution_times": [0.04]},
+        {"tiralib_schedule_string": "I(L0,L1,comps=['c1'])", "is_legal": False, "execution_times": None},
+        {"tiralib_schedule_string": "R(L0,comps=['c1'])", "is_legal": True, "execution_times": [0.03, 0.031]},
+    ],
+)
+```
 
 #### `store.contains(program_name, program_source_code, tiralib_schedule_string)`
 
 Returns `True` if a record exists for the given input.
+
+#### `store.get_program_source(program_name)`
+
+Retrieve the source code of a program by name. Returns a list of dicts, each with `program_hash` and `source_code`. Multiple entries are returned if different source versions share the same name.
+
+```python
+sources = store.get_program_source("blur")
+for s in sources:
+    print(s["program_hash"], s["source_code"][:80])
+```
+
+#### `store.get_program_records(program_name, program_source_code)`
+
+Retrieve all records for a specific program (all schedules recorded for that program). Returns a list of `LookupResult` objects.
+
+```python
+records = store.get_program_records("blur", "void blur() { ... }")
+for r in records:
+    print(r.schedule, r.is_legal, r.execution_times)
+```
+
+#### `store.backup(backup_path=None)`
+
+Create a snapshot copy of the database file. If no path is given, a timestamped file is created next to the database (e.g. `store_20260221T153012Z.db`). Returns the `Path` to the backup.
+
+```python
+backup = store.backup()                         # auto-timestamped
+backup = store.backup("/shared/backups/v1.db")  # custom path
+```
+
+#### `store.export(output_path, fmt="json")`
+
+Export the entire database to JSON or JSONL. Returns the `Path` to the exported file.
+
+- `fmt="json"` — a single JSON object keyed by program name.
+- `fmt="jsonl"` — one JSON object per line, one program per line.
+
+If the same program name has multiple source-code versions, keys are suffixed with `_v1`, `_v2`, etc.
+
+```python
+store.export("dataset.json", fmt="json")
+store.export("dataset.jsonl", fmt="jsonl")
+```
+
+Exported structure:
+
+```json
+{
+  "blur": {
+    "Tiramisu_cpp": "void blur() { ... }",
+    "schedules_list": [
+      {"schedule_str": "S(L0,L1,4,8,comps=['c1'])", "is_legal": true, "execution_times": [0.04]},
+      {"schedule_str": "I(L0,L1,comps=['c1'])", "is_legal": false, "execution_times": null}
+    ],
+    "program_name": "blur"
+  }
+}
+```
 
 ### Utility Methods
 
 | Method | Description |
 |---|---|
 | `store.count()` | Total number of records in the database. |
-| `store.stats()` | Summary dict: total/legal/illegal counts, distinct users, projects, CPU info. |
+| `store.program_count()` | Total number of distinct programs. |
+| `store.stats()` | Summary dict: total/legal/illegal counts, program count, distinct users, projects, CPU info. |
 | `store.keys(limit=0, offset=0)` | List of record SHA-256 keys (with optional pagination). |
-| `store.get(key)` | Retrieve a raw record dict by its SHA-256 key. |
-| `store.put(key, input_json, result_json, overwrite=False)` | Low-level insert/update by raw key (admin use). |
+| `store.get(key)` | Retrieve a raw record dict (joined with program data) by its SHA-256 key. |
+| `store.put(key, program_hash, schedule, result_json, overwrite=False)` | Low-level insert/update by raw key (admin use). |
 | `store.delete(key)` | Delete a record by its SHA-256 key. |
 
 ### Properties
@@ -116,13 +196,32 @@ Returns `True` if a record exists for the given input.
 | `store.cpu_model` | CPU model string stored in the database metadata. |
 | `store.slurm_cpus` | `SLURM_CPUS_PER_TASK` value stored in the database metadata. |
 
+### Standalone Utilities
+
+These are also importable from `tirastore` for direct use:
+
+| Function | Description |
+|---|---|
+| `normalize_schedule(schedule)` | Normalize a schedule string (strip whitespace, unify quote style). |
+| `validate_schedule(schedule)` | Validate a schedule string. Returns `(bool, reason_string)`. |
+| `normalize_program(source)` | Normalize a program source string for hashing (strip comments, includes, whitespace). |
+| `make_program_hash(source)` | Compute the SHA-256 hash of the normalized program source. |
+
 ## How It Works
 
 ### Storage
 
 All records are stored in a single SQLite file on the shared Lustre filesystem. This keeps the file count minimal (important for HPC storage quotas).
 
-**Record keying:** The key is the SHA-256 hex digest of the canonical JSON representation of the input (`program_name` + `program_tiramisu_source_code` + `tiralib_schedule_string`), with sorted keys and deterministic serialization. Identical inputs always produce the same key regardless of which user or node computes them.
+**Program deduplication:** Program source code is stored in a separate `programs` table, keyed by the SHA-256 hash of its normalized form. The `records` table references programs by hash. This means if you record 100 different optimization sequences for the same program, the source code is stored only once.
+
+**Program normalization:** Before hashing, program source code is normalized by stripping block comments (`/* ... */`), single-line comments (`// ...`), `#include` directives, and all whitespace. This ensures that cosmetically different versions of the same program (different formatting, comments, includes) produce the same hash and share a single programs-table entry. The original readable source code is always what gets stored; normalization is only used for hash computation.
+
+**Schedule normalization:** Schedule strings are normalized (whitespace removed, comp names single-quoted) before hashing and storing. This means `R( L0 , comps=["c1"] )` and `R(L0,comps=['c1'])` are treated as identical.
+
+**Schedule validation:** Schedule strings are validated against the grammar of known Tiramisu transformations (S, I, R, P, T2, T3, U, F) before recording. Invalid schedules are rejected with a descriptive error.
+
+**Record keying:** The record key is the SHA-256 hex digest of the canonical JSON of `{program_hash, normalized_schedule}`. Identical logical inputs always produce the same key regardless of cosmetic differences in the source code or schedule formatting.
 
 **SQLite settings for Lustre:**
 - `journal_mode=DELETE` — WAL mode uses shared memory/mmap which breaks on Lustre.
@@ -194,17 +293,28 @@ Stores database-level configuration:
 
 | Key | Description |
 |---|---|
-| `schema_version` | Schema version (currently `1`). |
+| `schema_version` | Schema version (currently `2`). |
 | `cpu_model` | CPU model string of the machine that created the DB. |
 | `slurm_cpus` | `SLURM_CPUS_PER_TASK` at DB creation time. |
 | `created_at` | ISO 8601 timestamp of DB creation. |
+
+### `programs` table
+
+Stores program source code, deduplicated by content hash:
+
+| Column | Type | Description |
+|---|---|---|
+| `program_hash` | `TEXT PRIMARY KEY` | SHA-256 hex digest of the normalized source code. |
+| `program_name` | `TEXT` | Human-readable program name. |
+| `source_code` | `TEXT` | Original (readable) program source code. |
 
 ### `records` table
 
 | Column | Type | Description |
 |---|---|---|
-| `key` | `TEXT PRIMARY KEY` | SHA-256 hex digest of the canonical input JSON. |
-| `input_json` | `TEXT` | Canonical JSON of `{program_name, program_tiramisu_source_code, tiralib_schedule_string}`. |
+| `key` | `TEXT PRIMARY KEY` | SHA-256 hex digest of `{program_hash, normalized_schedule}`. |
+| `program_hash` | `TEXT` | Foreign key referencing `programs(program_hash)`. |
+| `schedule` | `TEXT` | Normalized schedule string. |
 | `result_json` | `TEXT` | JSON of `{is_legal, execution_times}`. |
 | `hostname` | `TEXT` | Node that recorded this entry. |
 | `username` | `TEXT` | User that recorded this entry. |
@@ -216,15 +326,17 @@ Stores database-level configuration:
 
 ```
 tirastore/
-    __init__.py       # Public API: TiraStore, LookupResult
+    __init__.py       # Public API: TiraStore, LookupResult, normalize/validate helpers
     tirastore.py      # Main TiraStore class
     _lock.py          # HardLinkLock — distributed mutex via atomic link()
-    _store.py         # SQLite storage backend
-    _keys.py          # Canonical JSON + SHA-256 key generation
+    _store.py         # SQLite storage backend (programs + records tables)
+    _keys.py          # SHA-256 key/hash generation
+    _schedule.py      # Schedule + program normalization and validation
 
 tests/
-    test_keys.py      # Key generation tests
+    test_keys.py      # Key and hash generation tests
     test_lock.py      # Locking tests
+    test_schedule.py  # Schedule/program normalization and validation tests
     test_store.py     # SQLite storage tests
     test_tirastore.py # Integration tests
     multinode/

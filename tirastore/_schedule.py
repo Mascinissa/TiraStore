@@ -1,4 +1,4 @@
-"""Schedule string normalization and validation for TiraStore.
+"""Schedule and program normalization and validation for TiraStore.
 
 The schedule string encodes a sequence of Tiramisu optimization
 transformations separated by ``|``.  Before storing or looking up a record,
@@ -6,6 +6,10 @@ the schedule is:
 
 1. **Normalized** — whitespace stripped, comp names consistently single-quoted.
 2. **Validated** — checked against the grammar of known transformations.
+
+Program source code is normalized (for hashing only) by stripping comments,
+``#include`` directives, and all whitespace so that cosmetically different
+versions of the same program produce the same hash.
 """
 
 from __future__ import annotations
@@ -95,3 +99,32 @@ def validate_schedule(schedule: str) -> tuple[bool, str]:
             return False, f"Malformed {tname} transformation: {token!r}"
 
     return True, ""
+
+
+def normalize_program(source: str) -> str:
+    """Normalize a Tiramisu/C++ program source for hash computation.
+
+    The goal is to produce a canonical string such that two programs
+    differing only in whitespace, comments, or ``#include`` lines yield
+    the same hash.  The result is **not** meant to be human-readable.
+
+    Steps:
+
+    1. Remove block comments (``/* ... */``)
+    2. Remove single-line comments (``// ...``)
+    3. Remove ``#include`` lines
+    4. Remove all whitespace (spaces, tabs, newlines)
+    """
+    if not source:
+        return ""
+    # 1. Remove block comments (non-greedy, handles multiline)
+    text = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    # 2. Remove single-line comments
+    text = re.sub(r"//[^\n]*", "", text)
+    # 3. Remove #include lines
+    text = re.sub(
+        r'^\s*#\s*include\s*[<"][^>"]*[>"]\s*$', "", text, flags=re.MULTILINE
+    )
+    # 4. Remove all whitespace characters
+    text = re.sub(r"\s+", "", text)
+    return text
