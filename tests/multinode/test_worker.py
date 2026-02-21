@@ -37,8 +37,7 @@ def make_program_source(worker_id: int, record_idx: int) -> str:
 
 
 def make_schedule(worker_id: int, record_idx: int) -> str:
-    return f"L0_w{worker_id},L1_r{record_idx}"
-
+   return f"I(L{worker_id},L{record_idx},comps=['comp00'])"
 
 def make_contested_source(record_idx: int) -> str:
     """All workers use the same source for contested records."""
@@ -46,7 +45,7 @@ def make_contested_source(record_idx: int) -> str:
 
 
 def make_contested_schedule(record_idx: int) -> str:
-    return f"L0_shared,L1_r{record_idx}"
+   return f"I(L0,L{record_idx},comps=['comp00'])"
 
 
 def main():
